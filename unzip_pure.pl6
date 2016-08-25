@@ -1,17 +1,17 @@
 role BitReader {
-    has $!remaining-bits = 0;
-    has $!remaining-bit-count = 0;
+    has int64 $!remaining-bits;
+    has int64 $!remaining-bit-count;
 
-    method read-bits($count-in) {
-        my $count = $count-in;
+    method read-bits(int64 $count-in) {
+        my int64 $count = $count-in;
         my int64 $ret = 0;
-        my Int $got-bits = 0;
+        my int64 $got-bits = 0;
         my @tell = self.tell-bits;
 
         while $count {
-            if (my $rcnt = $!remaining-bit-count min $count) {
+            if (my int64 $rcnt = $!remaining-bit-count min $count) {
                 #say "must get $rcnt bits from remaining bits $!remaining-bits.fmt("%b") with mask {(2**$rcnt-1).fmt("%b")}";
-                my $new-bits = $!remaining-bits +& (2**$rcnt-1);
+                my int64 $new-bits = $!remaining-bits +& (2**$rcnt-1);
                 #say "new bits was $new-bits.fmt("%b")";
                 $new-bits +<= $got-bits;
                 $ret +|= $new-bits;
@@ -144,6 +144,10 @@ sub get-file($fh, $cdir) {
     return $file-data;
 }
 
+my int @len-base = (|(0 xx 257),3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258);
+my int @dist-base = (1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577);
+my int @codelen-order = (16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15);
+
 sub inflate {
     my ($fh, $compressed-size, $uncompressed-size) = @_;
 
@@ -172,44 +176,44 @@ sub inflate {
                 my $lit-tree;
                 my $dist-tree;
                 if $block-type == 1 { # Static huffman
+                    die "not implemented";
                 } elsif $block-type == 2 { # Dynamic Huffman
                     my $literals = $fh.read-bits(5) + 257;
                     my $distances = $fh.read-bits(5) + 1;
                     my $codelen-size = $fh.read-bits(4) + 4;
                     #say "literals $literals distances $distances codelen-size $codelen-size";
 
-                    my @clo = (16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15);
+                    # Read the code length huffman tree
                     my @l;
                     for 0..^$codelen-size {
-                        @l[@clo[$_]] = $fh.read-bits(3);
+                        @l[@codelen-order[$_]] = $fh.read-bits(3);
                     }
-
                     my $codelen-tree = HuffmanTree.new-from-bitlengths(@l);
-                    #say "offset {$fh.tell-bits}";
 
-                    sub _read_tree($cl-tree,$count) {
+                    # Read a huffman tree with data stored as bits in the code length huffman tree
+                    sub read-tree($cl-tree,$count) {
                         my @data;
                         my ($times,$what);
                         my $n = 0;
+
                         while $n < $count {
-                            
                             my $sym = $cl-tree.read-next-symbol($fh);
                             #say "next symbol $sym";
                             given $sym {
                                 #say "sym $sym";
-                                when 0 <= $_ <= 15 {
+                                when 0 <= $_ <= 15 { # literal
                                     $times = 1;
                                     $what = $sym;
                                 }
-                                when 16 { # repeat last code
+                                when 16 { # repeat last symbol 2-6 times
                                     $times = 3 + $fh.read-bits(2);
                                     $what = @data ?? @data[*-1] !! die "sym 16 encountered without previous data";
                                 }
-                                when 17 { # repeat zero
+                                when 17 { # repeat 3-11 zeroes
                                     $times = 3 + $fh.read-bits(3);
                                     $what = 0;
                                 }
-                                when 18 {
+                                when 18 { # repeat 11-139 zeroes
                                     $times = 11 + $fh.read-bits(7);
                                     $what = 0;
                                 }
@@ -222,19 +226,18 @@ sub inflate {
                     }
 
                     #say "read literal table of $literals entries";
-                    my @lit = _read_tree($codelen-tree, $literals);
+                    my @lit = read-tree($codelen-tree, $literals);
                     $lit-tree = HuffmanTree.new-from-bitlengths(@lit);
 
                     #say "read distance table of $distances entries";
-                    my @dist = _read_tree($codelen-tree, $distances);
+                    my @dist = read-tree($codelen-tree, $distances);
                     $dist-tree = HuffmanTree.new-from-bitlengths(@dist);
                 }
 
-                # Now read data
+                # Now read actual data stored as literal-tree symbols
+                # or distance-tree symbols and lengths, which encodes
+                # offsets to previously encoded data
                 my $data = Buf.new;
-                sub codelen-order($n) { (16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15)[$n] }
-                sub len-base($n) { (3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258)[$n-257] }
-                sub dist-base($n) { (1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577)[$n] }
                 sub x-dist-bits($n) { $n >= 2 ?? ($n +> 1) - 1 !! $n }
                 sub x-len-bits($n) { 257 <= $n <= 260 || $n == 285 ?? 0 !! (($n-257) +> 2) - 1 }
                 loop {
@@ -246,22 +249,22 @@ sub inflate {
                         #say "data end";
                         last;
                     } elsif 257 <= $r <= 285 {
-                        my $len = len-base($r) + $fh.read-bits(x-len-bits($r));
+                        my $len = @len-base[$r] + $fh.read-bits(x-len-bits($r));
                         #say "len $len x {x-len-bits($r)}";
                         my $dist-sym = $dist-tree.read-next-symbol($fh);
                         die "illegal dist symbol $dist-sym" unless 0 <= $dist-sym <= 29;
-                        my $dist = dist-base($dist-sym) + $fh.read-bits(x-dist-bits($dist-sym));
+                        my $dist = @dist-base[$dist-sym] + $fh.read-bits(x-dist-bits($dist-sym));
                         my $end = $data.elems;
                         my $get-cnt = $len;
                         while $get-cnt > $dist {
-                            $data.append($data[* - $dist .. *]);
+                            $data.append($data.subbuf($data.elems - $dist));
                             $get-cnt -= $dist;
                         }
                         if $get-cnt == $dist {
-                            $data.append($data[* - $dist .. *]);
+                            $data.append($data.subbuf($data.elems - $dist));
                         } else {
                             #say "append {Buf.new($data[* - $dist .. * - $dist + $get-cnt - 1]).decode('UTF-8').perl}";
-                            $data.append($data[* - $dist .. * - $dist + $get-cnt - 1]);
+                            $data.append($data.subbuf($data.elems - $dist, $get-cnt));
                         }
                         #say "dict lookup sym $r, len $len, dist-sym $dist-sym dist $dist got {Buf.new($data[*-$len..*]).decode('UTF-8').perl}";
                     } else {
