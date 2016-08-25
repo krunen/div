@@ -119,7 +119,7 @@ class HuffmanTree {
             $read ~= $fh.read-bits($bits - $read-bits).fmt('%0'~($bits - $read-bits)~'b').flip;
             $read-bits = $bits;
             #say "trying $bits, read $read";
-            if (%!tree{$read}:exists) {
+            if %!tree{$read}:exists {
                 return %!tree{$read};
             }
         }
