@@ -6,29 +6,22 @@ role BitReader {
         my int64 $count = $count-in;
         my int64 $ret = 0;
         my int64 $got-bits = 0;
-        my @tell = self.tell-bits;
 
         while $count {
-            if (my int64 $rcnt = $!remaining-bit-count min $count) {
-                #say "must get $rcnt bits from remaining bits $!remaining-bits.fmt("%b") with mask {(2**$rcnt-1).fmt("%b")}";
+            if my int64 $rcnt = $!remaining-bit-count min $count {
                 my int64 $new-bits = $!remaining-bits +& (2**$rcnt-1);
-                #say "new bits was $new-bits.fmt("%b")";
                 $new-bits +<= $got-bits;
                 $ret +|= $new-bits;
                 $got-bits += $rcnt;
                 $!remaining-bits +>= $rcnt;
                 $!remaining-bit-count -= $rcnt;
-                #say "after, remaining-bits are now $!remaining-bits.fmt("%b") and count $!remaining-bit-count";
                 $count -= $rcnt;
             }
             if $count {
-                #say "read 1 byte";
                 $!remaining-bits = self.read(1)[0];
-                #say "read, remaining-bits now $!remaining-bits.fmt("%08b")";
                 $!remaining-bit-count = 8;
             }
         }
-        #say "at {@tell} read $count-in gave " ~ $ret.fmt('%0' ~ $count-in ~ 'b');
         $ret;
     }
 
@@ -91,14 +84,14 @@ sub MAIN($filename) {
 }
 
 class HuffmanTree {
-    has %.tree;
+    has @.tree;
     has @.bits;
 
     method new-from-bitlengths(@l) {
         my $sym = 0;
         my $bits = -1;
         my @bits;
-        my %tree;
+        my @tree;
         for @l.pairs.grep(*.value).sort({sprintf("%08d%08d",$_.value,$_.key)}) -> $l {
             if $bits != $l.value {
                 $sym +<= ($l.value - $bits);
@@ -106,22 +99,26 @@ class HuffmanTree {
                 @bits.push($bits);
             }
             #say "populate: "~$sym.fmt("%0"~$bits~"b")~" {$l.key}";
-            %tree{$sym.fmt('%0'~$bits~'b')} = $l.key;
+            @tree[$bits]{$sym} = $l.key;
             $sym++;
         }
-        self.bless(:%tree,:@bits);
+        self.bless(:@tree,:@bits);
     }
 
     method read-next-symbol($fh) {
-        my $read = '';
-        my $read-bits = 0;
-        for @!bits -> $bits {
-            $read ~= $fh.read-bits($bits - $read-bits).fmt('%0'~($bits - $read-bits)~'b').flip;
-            $read-bits = $bits;
-            #say "trying $bits, read $read";
-            if %!tree{$read}:exists {
-                return %!tree{$read};
+        my int $read = 0;
+        my int $read-bits = 0;
+        my int $i = 0;
+        loop {
+            my int $bit = $fh.read-bits(1);
+            $read +<= 1;
+            $read +|= $bit;
+            $read-bits++;
+            if (@!tree[$read-bits]{$read}:exists) {
+                return @!tree[$read-bits]{$read};
             }
+            $i++;
+            last if $i > 16;
         }
         die "can't find symbol in stream, aborting after $read";
     }
@@ -149,7 +146,7 @@ my int @dist-base = (1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,
 my int @codelen-order = (16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15);
 
 sub inflate {
-    my ($fh, $compressed-size, $uncompressed-size) = @_;
+    my ($fh) = @_;
 
     my $output = Buf.new;
 
